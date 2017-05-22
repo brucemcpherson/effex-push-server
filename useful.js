@@ -84,7 +84,7 @@ module.exports =  (function (ns) {
         Array.prototype.push.apply (keys , r);
       });
       
-      stream.on ('end', function (r) {
+      stream.on ('end', function () {
         resolve (keys);
       });
       

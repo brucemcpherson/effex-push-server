@@ -1,6 +1,4 @@
-config.json
-secrets.js
-
+private
 # Logs
 logs
 *.log

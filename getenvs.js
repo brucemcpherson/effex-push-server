@@ -1,7 +1,7 @@
 module.exports = (function(ns) {
 
   var appConfigs = require('./appConfigs.js');
-  var secrets = require ('./secrets');
+  var secrets = require ('./private/secrets');
   var redis = require ('ioredis');
     
   ns.init = function() {

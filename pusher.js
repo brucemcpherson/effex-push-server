@@ -4,11 +4,12 @@
  */
 module.exports = (function(ns) {
 
-  ns.settings = require('./secrets');
+  ns.settings = require('./private/secrets');
   var GetEnvs = require('./getenvs');
   var Useful = require('./useful');
   var axios = require('axios');
-
+  var fb =require ('./firebase');
+  
   var env_;
   var redisWatchable_, redisSubscribe_, redisLog_, redisWatchLog_, redisSyncPub_, redisSync_;
 
@@ -119,7 +120,9 @@ module.exports = (function(ns) {
     var st = ns.settings;
     ns.synchTime();
     
-
+    // get firebase going
+    fb.init();
+    
     // set up keyspace event monitoring - watching out for del, expired and set on data items and time syncing
     redisSubscribe_.config('set', 'notify-keyspace-events', 'Exg$z')
       .then(function() {
@@ -137,14 +140,24 @@ module.exports = (function(ns) {
           // I'm logging all interesting events -- written data
           // but relying on watching for the logevent to be done before doing a push
 
+          // an item changes
           if (db === st.db.client && st.watchable.events[method] && message.slice(0, st.itemPrefix.length) === st.itemPrefix) {
             ns.logEvent(method, message, "redis", now + timeOffset );
           }
+          
+          // a log file records an event
           else if (db === st.db.log && method === "zadd" && message.slice(0, st.logPrefix.length) === st.logPrefix) {
             ns.pushEvent(message);
           }
+          
+          // used for synching time between instances
           else if (db === st.db.ts && method === "set" && message.slice(0, st.syncPrefix.length) === st.syncPrefix) {
             ns.synchTimeUpdate (message);
+          }
+          
+          // a watchable expires - i use this to keep firebase clean
+          else if (db === st.db.watchable && method === "expired" && message.slice(0, st.watchablePrefix.length) === st.watchablePrefix) {
+            ns.cleanFirebase (message);
           }
 
         });
@@ -201,7 +214,8 @@ module.exports = (function(ns) {
       message: sx.options.message || "",
       pushId: sx.options.pushid,
       nextevent: sx.nextevent,
-      type: sx.options.type
+      type: sx.options.type,
+      uq: sx.options.uq
     };
   };
 
@@ -224,6 +238,7 @@ module.exports = (function(ns) {
     // kick off the search for anybody watching this - its key will contain the item's private key
     var wkey = st.watchablePrefix + "*" + itemKey + "." + method + "*";
 
+
     // service any watchers
     // all times stored in values have already been tweaked to match server time when event was logged
     return Promise.all([ns.getLoggedEvents(lkey), Useful.getMatchingObs(redisWatchable_, wkey)])
@@ -238,14 +253,20 @@ module.exports = (function(ns) {
           var sxKey = sxo.key.split(".")[0].replace(ns.settings.watchablePrefix, "");
           var sx = sxo.data;
 
+
           // reduce to keys that havent been reported yet
           var nv = ns.getQualifyingKeys(values, sx);
+
 
           // if there's anything to report
           if (nv.length) {
 
             // the next event will be one ms along from where are
             sx.nextevent = nv[nv.length - 1] + 1;
+            
+            // this shouldn't be relevant as it self adjusts and is already applied, but may be useful debugging
+            sx.timeoffset = timeOffset;
+            
             var packet = ns.makeSxPacket(nv, sx, sxKey);
 
             // and this is what we'll log
@@ -259,58 +280,32 @@ module.exports = (function(ns) {
               type: sx.options.type,
               ok: false,
               code: ns.settings.errors.CREATED,
-              value:packet.value
+              value:packet.value,
+              uq:sx.options.uq
             };
 
             // if its a push type and the recipient is currently connected    
             if (sx.options.type === "push") {
-             
+              
+              // fb doesnt allow $
+              var fbKey = sxKey.replace ("$","___");
+              // push to firebase and let him worry about it
+              fb.set (fbKey + "/" + sx.options.uq, JSON.stringify(packet.value))
+              .then (function () {
+                watchLog.error = "emitted";
+                watchLog.ok = true;
+                return updateSx (sxo.key, sx, watchLog);
+              })
+              .then (function () {
+                return ns.logWatchLog(sxKey, logTime, watchLog);
+              })
+              .catch(function (err) {
+                watchLog.error = err;
+                console.log ('failed fb', err);
+                return ns.logWatchLog(sxKey, logTime, watchLog);
+              });
 
-              var cx = ns.connections[sx.options.pushid];
-              if (!cx) console.log('connection disappeared for ', sx.options, Object.keys(ns.connections));
-              var connection = cx && cx.connection;
-              if (connection) {
-                
-                // this is the event tracking id .. the client id should be watching for it
-                connection.client.emit(sx.options.uq, packet, function(pr) {
-                  
-                  Useful.updateItem(redisWatchable_, sxo.key, sx, 0)
-                    .then(function(r) {
-                      if (r !== "OK") {
-                        watchLog.error = "failed to update next event";
-                        watchLog.code = ns.settings.errors.INTERNAL;
-                      }
-                      else {
-                        watchLog.error = "emitted";
-                        watchLog.ok = true;
-                      }
-                      return ns.logWatchLog(sxKey, logTime, watchLog);
-                    })
-                    .catch(function(err) {
-                      watchLog.error = err;
-                      watchLog.code = ns.settings.errors.INTERNAL;
-                      ns.logWatchLog(sxKey, logTime, watchLog);
-                    });
-                });
-              }
-              else {
-                
-                watchLog.error = 'not connected for push notification- subscription removed';
-                watchLog.code = ns.settings.errors.FORBIDDEN;
 
-                // no need to wait
-                ns.logWatchLog(sxKey, logTime, watchLog);
-
-                // and expire this push notification shortly so it doesn't bother us again
-                // no need to wait
-                redisWatchable_.expire(sxo.key, ns.settings.expireOnDroppedConnection)
-                  .then(function(t) {
-                    if (!t) {
-                      console.log("failed to expire after disconnection", sxo.key);
-                    }
-                  });
-
-              }
             }
             else if (sx.options.type === "url") {
               //prepare
@@ -330,18 +325,16 @@ module.exports = (function(ns) {
               if (data) ac.data = data;
 
               //post
-              axios(ac).then(function(result) {
-                  watchLog.error = "emitted";
-                  watchLog.ok = true;
-                  ns.logWatchLog(sxKey, logTime, watchLog);
-                  
+              axios(ac)
+                .then(function(result) {
+                  watchLog.error = result.data.error || "emitted";
+                  watchLog.ok = result.data.ok;
+   
+                  // the difference between sxo.key(the entire key) and sxKey (the coupon code)
                   if (result.data.ok) {
-                    Useful.updateItem(redisWatchable_, sxo.key, sx, 0)
-                    .then(function(r) {
-                      if (r !== "OK") {
-                        watchLog.error = "failed to update next event";
-                        watchLog.code = ns.settings.errors.INTERNAL;
-                      }
+                    updateSx (sxo.key, sx, watchLog)
+                    .then (function () {
+                      ns.logWatchLog(sxKey, logTime, watchLog);
                     });
                   }
                   else {
@@ -374,6 +367,17 @@ module.exports = (function(ns) {
         }));
 
       });
+      
+
+      function updateSx (key, sx, watchLog ) {
+        return Useful.updateItem(redisWatchable_, key , sx, 0)
+          .then(function(r) {
+            if (r !== "OK") {
+              watchLog.error = "failed to update next event";
+              watchLog.code = ns.settings.errors.INTERNAL;
+            }
+          });
+      }
 
   };
 
@@ -396,6 +400,20 @@ module.exports = (function(ns) {
   };
 
   /**
+   * when a watchable item expires
+   * use the opportunity to remove it from firebase
+   * @param {string} the subscription message
+   * @return {Promise}
+   */
+  ns.cleanFirebase = function(message) {
+    
+    // get the actual key & remove it
+    var key = message.split(".")[0].slice (ns.settings.watchablePrefix.length);
+    return fb.remove (key);
+    
+  };
+
+  /**
    * logs an event against a data item
    * @param {string} method the method reported by redis (set/del/expired)
    * @param {string} key the provate encoded data item key
@@ -410,12 +428,11 @@ module.exports = (function(ns) {
 
     // log events are keyed  by their private item key
     var lkey = ns.settings.logPrefix + key + "." + method;
-    
 
     // add an observation for this log entry
     return redisLog_.zadd(lkey, logTime, logTime)
       .then(function(result) {
-        // set an expire time some standard amount from now 
+        // set an expire time some standard amount from now
         return redisLog_.expire(lkey, ns.settings.logLifetime);
       });
 
