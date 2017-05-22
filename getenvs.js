@@ -14,15 +14,7 @@ module.exports = (function(ns) {
     return {
       redisPort: appConfigs.get("REDIS_PORT"),
       redisIp: appConfigs.get("REDIS_IP"),
-      redisPass: appConfigs.get("REDIS_PASS"),
-      effexMasterSeed: appConfigs.get("EFFEX_MASTER_SEED"),
-      effexAlgo: appConfigs.get("EFFEX_ALGO"),
-      expressPort: appConfigs.get("PORT"),
-      expressHost: appConfigs.get("IP"),
-      adminKey: appConfigs.get("EFFEX_ADMIN"),
-      socketPort:appConfigs.get("SOCKET_PORT"),
-      socketPassTimeout:appConfigs.get("SOCKET_PASS_TIMEOUT"),
-      socketPass:appConfigs.get("SOCKET_PASS")
+      redisPass: appConfigs.get("REDIS_PASS")
     };
   };
   
