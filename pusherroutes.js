@@ -5,13 +5,7 @@
  */
 module.exports = (function(nsa) {
 
-  var appConfigs = require('./appConfigs.js');
-  var express = require('express');
-  var app = express();
-
   var GetEnvs = require ('./getenvs');
-  var Pusher = require ('./pusher');
-
   
   // these will be the settings for the app
   nsa.settings = {};
@@ -32,7 +26,7 @@ module.exports = (function(nsa) {
    * app start up
    */
   nsa.init = function () {
-
+    console.log ("Connected to redis on port " + nsa.settings.env.redisPort);
   };
 
   return nsa;

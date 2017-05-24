@@ -67,9 +67,8 @@ module.exports = (function(ns) {
     var s = message.split (".");
     var sId = s[1];
     
-    // check this is for me
+    // check this is for me - multiple instances will cause this
     if (sId !== syncId) {
-      console.log ("received a synch not for me", sId , syncId);
       return Promise.resolve(null);
     }
     
@@ -93,7 +92,11 @@ module.exports = (function(ns) {
           if (timeNobs) {
             timeLatency = timeNobs > 1 ? latency * smooth + timeLatency * (1 - smooth) : latency;
             var offBy = ob.writtenAt - now - timeLatency/2; 
+            var toof = timeOffset;
             timeOffset = timeNobs > 1 ? offBy * smooth + timeOffset * (1 - smooth) : offBy;
+            if (Math.round(toof) !== Math.round(timeOffset)) {
+              console.log ("settling timeoffset on ", timeOffset);
+            }
           }
 
           timeNobs++;
@@ -237,7 +240,6 @@ module.exports = (function(ns) {
     
     // kick off the search for anybody watching this - its key will contain the item's private key
     var wkey = st.watchablePrefix + "*" + itemKey + "." + method + "*";
-
 
     // service any watchers
     // all times stored in values have already been tweaked to match server time when event was logged
