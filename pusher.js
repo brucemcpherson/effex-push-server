@@ -306,8 +306,6 @@ module.exports = (function(ns) {
                 console.log ('failed fb', err);
                 return ns.logWatchLog(sxKey, logTime, watchLog);
               });
-
-
             }
             else if (sx.options.type === "url") {
               //prepare
